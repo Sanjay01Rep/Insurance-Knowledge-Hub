@@ -14,6 +14,35 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
+
+def _quiet_streamlit_library_watch() -> None:
+    """Stop Streamlit from walking torch/transformers (that freeze is the hang on Ask and on Ctrl+C)."""
+    try:
+        from streamlit.watcher import local_sources_watcher as watcher
+    except Exception:
+        return
+
+    def get_module_paths(module):
+        name = getattr(module, "__name__", "") or ""
+        path = str(getattr(module, "__file__", "") or "").replace("\\", "/")
+        if name.startswith(
+            ("transformers", "torch", "torchvision", "sentence_transformers", "chromadb", "huggingface_hub")
+        ) or "/site-packages/" in path:
+            return set()
+        try:
+            original = getattr(get_module_paths, "_original", None)
+            if original:
+                return original(module)
+        except Exception:
+            return set()
+        return set()
+
+    get_module_paths._original = watcher.get_module_paths  # type: ignore[attr-defined]
+    watcher.get_module_paths = get_module_paths
+
+
+_quiet_streamlit_library_watch()
+
 st.set_page_config(
     page_title="Insurance Learning Assistant",
     page_icon=str(ROOT / "Logo" / "ICEA Lion.png"),
@@ -21,8 +50,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-from ask import answer_question
+from ask import answer_question, suggested_questions
+from export_answer import answer_docx_bytes, answer_pdf_bytes, answer_text
 from config import (
+    KEY_HELP,
     PROVIDER_KEY_FIELDS,
     PROVIDER_SHORT,
     TAVILY_FIELD,
@@ -32,6 +63,14 @@ from config import (
     resolve_answer_setup,
     save_env_value,
     tavily_status,
+)
+from custom_models import (
+    CUSTOM_API_KINDS,
+    delete_custom_model,
+    get_custom_model,
+    is_custom_id,
+    save_custom_model,
+    update_custom_model,
 )
 from db import (
     add_message,
@@ -43,9 +82,10 @@ from db import (
     new_conversation_id,
     save_document,
 )
+from indexer import preload_embedding_model
 from processing import enqueue_processing, enqueue_unfinished
 
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 APP_TITLE = "Insurance Learning Assistant"
 APP_SUBTITLE = "AI-powered Insurance and D365 Knowledge Assistant"
 APP_VENV = Path(os.environ.get("LOCALAPPDATA", "")) / "MyD365LearningAssistant" / ".venv"
@@ -265,7 +305,8 @@ div[data-testid="stRadio"] div[role="radiogroup"] {{
   border-radius: 10px;
   padding: 0.28rem;
   gap: 0.35rem;
-  width: fit-content;
+  width: 100%;
+  flex-wrap: wrap !important;
 }}
 
 div[data-testid="stRadio"] div[role="radiogroup"] label {{
@@ -505,7 +546,7 @@ def render_documents_tab() -> None:
     st.markdown("")
     st.caption(
         "The first document can take a few minutes while a small language model "
-        "downloads to this PC. After that, new files are usually quicker."
+        "downloads to this PC. After that, search and Ask are usually quicker."
     )
     render_document_list()
 
@@ -724,6 +765,45 @@ def _render_chunk_inspector(doc_id: str) -> None:
         st.caption(f"Showing first 40 of {len(chunks)} chunks.")
 
 
+def _render_answer_exports(index: int, message: dict, model_bits: list[dict]) -> None:
+    answer = (message.get("content") or "").strip()
+    sources = [s for s in (message.get("sources") or []) if s.get("kind") != "model"]
+    model_note = ""
+    if model_bits:
+        info = model_bits[0]
+        used = info.get("model") or ""
+        label = info.get("label") or ""
+        if used:
+            model_note = f"Answered by {label} using {used}."
+    text_body = answer_text(answer, sources, model_note)
+    st.caption("Save this answer")
+    down_a, down_b, down_c = st.columns(3)
+    with down_a:
+        st.download_button(
+            "Text",
+            data=text_body.encode("utf-8"),
+            file_name="learning-answer.txt",
+            mime="text/plain",
+            key=f"export_txt_{index}_{message.get('id') or index}",
+        )
+    with down_b:
+        st.download_button(
+            "Word",
+            data=answer_docx_bytes(answer, sources, model_note),
+            file_name="learning-answer.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key=f"export_docx_{index}_{message.get('id') or index}",
+        )
+    with down_c:
+        st.download_button(
+            "PDF",
+            data=answer_pdf_bytes(answer, sources, model_note),
+            file_name="learning-answer.pdf",
+            mime="application/pdf",
+            key=f"export_pdf_{index}_{message.get('id') or index}",
+        )
+
+
 def render_ask_tab() -> None:
     if "conversation_id" not in st.session_state:
         st.session_state.conversation_id = new_conversation_id()
@@ -742,7 +822,8 @@ def render_ask_tab() -> None:
                 st.rerun()
 
         choices = list_provider_choices()
-        if "answer_model" not in st.session_state:
+        choice_ids = [item["id"] for item in choices]
+        if "answer_model" not in st.session_state or st.session_state.answer_model not in choice_ids:
             st.session_state.answer_model = default_provider()
         st.markdown(
             '<div class="hub-model-label">Which model should write the answer?</div>',
@@ -750,7 +831,7 @@ def render_ask_tab() -> None:
         )
         st.radio(
             "Which model should write the answer?",
-            options=[item["id"] for item in choices],
+            options=choice_ids,
             format_func=lambda pid: next(
                 (item["label"] for item in choices if item["id"] == pid), pid
             ),
@@ -781,25 +862,42 @@ def render_ask_tab() -> None:
 
         messages = list_messages(st.session_state.conversation_id)
         if not messages:
-            st.markdown(
-                "<p>Try: “What is profit commission in my documents?” "
-                "or “How does that work in D365?”</p>",
-                unsafe_allow_html=True,
-            )
+            st.caption("Try one of these, or type your own question below.")
+            for i, suggestion in enumerate(suggested_questions()):
+                if st.button(suggestion, key=f"ask_suggest_{i}"):
+                    st.session_state.pending_ask = suggestion
+                    st.rerun()
 
-        for message in messages:
+        for index, message in enumerate(messages):
             role = message.get("role") or "assistant"
             with st.chat_message("user" if role == "user" else "assistant"):
                 st.markdown(message.get("content") or "")
                 sources = message.get("sources") or []
+                model_bits = [s for s in sources if s.get("kind") == "model"]
+                doc_sources = [s for s in sources if (s.get("kind") or "document") == "document"]
+                web_sources = [s for s in sources if s.get("kind") == "web"]
+                if role == "assistant" and model_bits:
+                    info = model_bits[0]
+                    used = info.get("model") or ""
+                    label = info.get("label") or "Gemini"
+                    requested = info.get("requested") or ""
+                    if used and requested and used != requested:
+                        st.caption(
+                            f"Answered by {label} using {used} ({requested} was busy or unavailable)."
+                        )
+                    elif used:
+                        st.caption(f"Answered by {label} using {used}.")
                 if role == "assistant" and sources:
-                    doc_sources = [s for s in sources if (s.get("kind") or "document") != "web"]
-                    web_sources = [s for s in sources if s.get("kind") == "web"]
                     if doc_sources:
                         st.markdown('<div class="hub-source-title">Sources (your documents)</div>', unsafe_allow_html=True)
                         for source in doc_sources:
-                            label = html.escape(source.get("label") or "")
-                            st.markdown(f'<div class="hub-source">{label}</div>', unsafe_allow_html=True)
+                            title = source.get("label") or "Source"
+                            excerpt = (source.get("excerpt") or "").strip()
+                            with st.expander(title, expanded=False):
+                                if excerpt:
+                                    st.text(excerpt)
+                                else:
+                                    st.caption("Passage was not stored for this older answer. Search Documents for this file.")
                     if web_sources:
                         st.markdown(
                             '<div class="hub-source-title">From the web (not from your documents)</div>',
@@ -810,8 +908,11 @@ def render_ask_tab() -> None:
                             url = html.escape(source.get("url") or "")
                             extra = f" — {url}" if url else ""
                             st.markdown(f'<div class="hub-source-web">{label}{extra}</div>', unsafe_allow_html=True)
+                if role == "assistant" and (message.get("content") or "").strip():
+                    _render_answer_exports(index, message, model_bits)
 
-    question = st.chat_input("Ask about your documents…")
+    pending = st.session_state.pop("pending_ask", None)
+    question = st.chat_input("Ask about your documents…") or pending
     if not question:
         return
 
@@ -820,11 +921,22 @@ def render_ask_tab() -> None:
     with st.spinner("Looking through your documents…"):
         result = answer_question(question, history, provider=st.session_state.get("answer_model"))
     if result.get("ok"):
+        sources = list(result.get("sources") or [])
+        used = (result.get("model_used") or "").strip()
+        if used:
+            sources = [
+                {
+                    "kind": "model",
+                    "label": result.get("provider") or "Gemini",
+                    "model": used,
+                    "requested": result.get("model_requested") or "",
+                }
+            ] + sources
         add_message(
             st.session_state.conversation_id,
             "assistant",
             result["answer"],
-            result.get("sources") or [],
+            sources,
         )
     else:
         add_message(
@@ -843,20 +955,47 @@ def render_auth_panel() -> None:
         st.session_state.auth_editing = False
     if "auth_editing_tavily" not in st.session_state:
         st.session_state.auth_editing_tavily = False
+    if st.session_state.pop("_reset_custom_form", False):
+        st.session_state.custom_name = ""
+        st.session_state.custom_model_id = ""
+        st.session_state.pop("custom_api_key", None)
+        st.session_state.pop("custom_base_url", None)
 
     provider = st.session_state.answer_model
-    if provider not in PROVIDER_SHORT:
+    custom = is_custom_id(provider)
+    custom_row = get_custom_model(provider) if custom else None
+    if custom and not custom_row:
         provider = default_provider()
-        st.session_state.answer_model = provider
+        custom = False
     if st.session_state.get("_auth_for_provider") != provider:
         st.session_state._auth_for_provider = provider
         st.session_state.auth_editing = False
+        st.session_state.pop("confirm_delete_model", None)
 
-    status = auth_status(provider)
-    short = PROVIDER_SHORT[provider]
+    if custom:
+        short = custom_row["name"]
+        status = {
+            "present": bool(custom_row.get("ready")),
+            "message": (
+                f"{short} saved on this PC · Ready."
+                if custom_row.get("ready")
+                else f"No key for {short} — paste it below."
+            ),
+        }
+    else:
+        if provider not in PROVIDER_SHORT:
+            provider = default_provider()
+        short = PROVIDER_SHORT[provider]
+        status = auth_status(provider)
+
     with st.container(border=True):
         st.markdown('<div class="hub-h2">Auth</div>', unsafe_allow_html=True)
         st.caption(f"Key for {short} — paste and save like the Auth token in Test Management Hub.")
+        help_info = None if custom else KEY_HELP.get(provider)
+        if help_info:
+            st.markdown(
+                f"[{html.escape(help_info['label'])}]({help_info['url']}) — {html.escape(help_info['steps'])}"
+            )
         kind = "ok" if status["present"] else "warn"
         st.markdown(
             f'<p class="hub-auth-line {kind}">{html.escape(status["message"])}</p>',
@@ -869,7 +1008,34 @@ def render_auth_panel() -> None:
                 st.session_state.auth_editing = True
                 st.rerun()
 
-        if show_edit:
+        if show_edit and custom:
+            new_key = st.text_input(
+                f"{short} API key",
+                type="password",
+                placeholder="Paste API key",
+                key="auth_input_custom_key",
+            )
+            save_col, cancel_col = st.columns(2)
+            with save_col:
+                if st.button("Save key", key="auth_save"):
+                    try:
+                        update_custom_model(provider, api_key=new_key)
+                        st.session_state.pop("auth_input_custom_key", None)
+                        st.session_state.auth_editing = False
+                        st.session_state.auth_flash = "Key saved on this PC. Applied immediately — no restart needed."
+                        st.rerun()
+                    except ValueError as err:
+                        st.error(str(err))
+            with cancel_col:
+                if status["present"] and st.button("Cancel", key="auth_cancel", type="secondary"):
+                    st.session_state.auth_editing = False
+                    st.session_state.pop("auth_input_custom_key", None)
+                    st.rerun()
+            st.markdown(
+                '<p class="hub-auth-hint">Saved on this PC · applied immediately</p>',
+                unsafe_allow_html=True,
+            )
+        elif show_edit:
             fields = PROVIDER_KEY_FIELDS[provider]
             values: dict[str, str] = {}
             for field in fields:
@@ -906,14 +1072,82 @@ def render_auth_panel() -> None:
                 unsafe_allow_html=True,
             )
 
+        if custom:
+            if st.session_state.get("confirm_delete_model") == provider:
+                st.warning("This removes the saved model from Ask. You can add it again later.")
+                yes_col, no_col = st.columns(2)
+                with yes_col:
+                    if st.button("Yes, delete", key="auth_delete_yes"):
+                        delete_custom_model(provider)
+                        st.session_state.confirm_delete_model = None
+                        st.session_state.auth_flash = "Saved model deleted."
+                        st.session_state._pending_answer_model = default_provider()
+                        st.rerun()
+                with no_col:
+                    if st.button("Cancel", key="auth_delete_no", type="secondary"):
+                        st.session_state.confirm_delete_model = None
+                        st.rerun()
+            elif st.button("Delete this saved model", key="auth_delete", type="secondary"):
+                st.session_state.confirm_delete_model = provider
+                st.rerun()
+
         if st.session_state.get("auth_flash"):
             st.success(st.session_state.auth_flash)
             st.session_state.auth_flash = ""
 
         st.divider()
+        with st.expander("Add another model"):
+            st.caption("Saved models stay on this PC and show up on the Ask tab next time.")
+            kind_labels = {key: value["label"] for key, value in CUSTOM_API_KINDS.items()}
+            kind_pick = st.selectbox(
+                "Kind of API",
+                options=list(kind_labels.keys()),
+                format_func=lambda key: kind_labels[key],
+                key="custom_kind",
+            )
+            kind_info = CUSTOM_API_KINDS.get(kind_pick) or CUSTOM_API_KINDS["other"]
+            if kind_info.get("help_url"):
+                st.markdown(
+                    f"[{html.escape(kind_info['help_label'])}]({kind_info['help_url']})"
+                )
+            custom_name = st.text_input("Name on the Ask tab", placeholder="e.g. Groq or Gemini", key="custom_name")
+            custom_model = st.text_input(
+                "Model name from the provider",
+                placeholder=f"e.g. {kind_info.get('example_model') or 'model-id'}",
+                key="custom_model_id",
+            )
+            custom_key = st.text_input("API key", type="password", placeholder="Paste API key", key="custom_api_key")
+            custom_url = ""
+            if kind_pick == "other":
+                custom_url = st.text_input(
+                    "API address",
+                    placeholder="https://api.example.com/v1",
+                    key="custom_base_url",
+                )
+            if st.button("Save this model", key="custom_save"):
+                try:
+                    saved = save_custom_model(
+                        name=custom_name,
+                        model=custom_model,
+                        api_key=custom_key,
+                        kind=kind_pick,
+                        base_url=custom_url,
+                    )
+                    st.session_state.auth_flash = f"{saved['name']} saved. It will be here next time you open the app."
+                    st.session_state._reset_custom_form = True
+                    st.session_state._pending_answer_model = saved["id"]
+                    st.rerun()
+                except ValueError as err:
+                    st.error(str(err))
+
+        st.divider()
         t_status = tavily_status()
         t_kind = "ok" if t_status["present"] else "warn"
         st.markdown('<div class="hub-source-title">Web search (optional)</div>', unsafe_allow_html=True)
+        tavily_help = KEY_HELP["tavily"]
+        st.markdown(
+            f"[{html.escape(tavily_help['label'])}]({tavily_help['url']}) — {html.escape(tavily_help['steps'])}"
+        )
         st.markdown(
             f'<p class="hub-auth-line {t_kind}">{html.escape(t_status["message"])}</p>',
             unsafe_allow_html=True,
@@ -957,6 +1191,7 @@ def render_auth_panel() -> None:
 
 init_db()
 inject_chrome()
+preload_embedding_model()
 if not _using_app_python():
     st.error(
         "This window is an old or extra copy of the app. Close every Insurance Learning Assistant "
@@ -966,6 +1201,9 @@ if not _using_app_python():
 
 if "module" not in st.session_state:
     st.session_state.module = "Documents"
+pending_model = st.session_state.pop("_pending_answer_model", None)
+if pending_model:
+    st.session_state.answer_model = pending_model
 
 st.radio(
     "Modules",
@@ -992,8 +1230,8 @@ with side_col:
   <ol class="hub-side-list">
     <li>Add your D365 and insurance documents</li>
     <li>Search or filter your documents, then click one to expand</li>
-    <li>Paste the API key in Auth (like the other hub’s token), then Save key</li>
-    <li>On Ask, choose a model, ask a question, and read the listed source</li>
+    <li>Paste the API key in Auth, or add another model and Save this model</li>
+    <li>On Ask, pick a starter question or type your own, then click a source to read the passage</li>
   </ol>
   <p class="hub-hint">If something is not in your files, the assistant will say so, then can still explain general D365 or insurance ideas, clearly labelled.</p>
 </div>

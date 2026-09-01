@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from config import resolve_answer_setup  # used by Ask tab model picker
-from db import count_ready_documents, logger
+from db import count_ready_documents, list_documents, logger
 from indexer import search_chunks
-from llm import complete
+from llm import AnswerModelError, complete
 from web_search import search_web
 
 SYSTEM_RULES = """
@@ -64,7 +64,9 @@ def unique_sources(hits: list[dict]) -> list[dict]:
                 "kind": "document",
                 "label": label,
                 "document_name": meta.get("document_name") or "",
+                "document_id": meta.get("document_id") or "",
                 "source_locator": meta.get("source_locator") or "",
+                "excerpt": (hit.get("content") or "").strip()[:1200],
             }
         )
     return sources
@@ -182,6 +184,9 @@ def answer_question(
     prompt = _build_prompt(question, history, hits, web_hits)
     try:
         text = complete(prompt, setup)
+    except AnswerModelError as err:
+        logger.exception("answer model failed provider=%s", setup.get("provider"))
+        return {"ok": False, "error": str(err) or ASK_FAIL, "sources": sources}
     except Exception:
         logger.exception("answer model failed provider=%s", setup.get("provider"))
         return {"ok": False, "error": ASK_FAIL, "sources": sources}
@@ -193,4 +198,45 @@ def answer_question(
     if not hits and NOT_IN_DOCS not in text:
         text = NOT_IN_DOCS + "\n\n" + text
 
-    return {"ok": True, "answer": text, "sources": sources, "provider": setup.get("label")}
+    return {
+        "ok": True,
+        "answer": text,
+        "sources": sources,
+        "provider": setup.get("label"),
+        "model_used": setup.get("model_used") or setup.get("model") or "",
+        "model_requested": setup.get("model") or "",
+    }
+
+
+def suggested_questions() -> list[str]:
+    """Short starter questions from the user's ready documents."""
+    found: list[str] = []
+    for doc in list_documents():
+        if (doc.get("processing_status") or "") != "ready":
+            continue
+        topic = (doc.get("topic") or "").strip()
+        module = (doc.get("module") or "").strip()
+        name = (doc.get("name") or "").strip()
+        if topic:
+            found.append(f"What do my documents say about {topic}?")
+        if module:
+            found.append(f"How does {module} work in D365 according to my files?")
+        if name:
+            short = name if len(name) < 42 else name[:39] + "..."
+            found.append(f"Summarize {short} in simple terms.")
+    defaults = [
+        "What is reinsurance in my documents?",
+        "What is profit commission in my documents?",
+        "How does that work in D365?",
+    ]
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in found + defaults:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(item)
+        if len(ordered) >= 5:
+            break
+    return ordered

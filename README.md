@@ -4,17 +4,17 @@ A simple app on your laptop: upload D365 and insurance documents, then ask quest
 
 You do **not** need to be a developer. Follow the steps below in order.
 
-Answers use the model you pick on the **Ask** tab (ChatGPT, Claude, Cursor, or Azure OpenAI). Paste that model’s key in **Auth** on the right. Searching your uploaded files is always **local and free** on this PC. Excel and PDF contents are **never** sent to Tavily or the internet.
+Answers use the model you pick on the **Ask** tab (Gemini, ChatGPT, Claude, Cursor, or Azure OpenAI). Paste that model’s key in **Auth** on the right, or in `.env`. Searching your uploaded files is always **local and free** on this PC. Excel and PDF contents are **never** sent to Tavily or the internet.
 
 ---
 
 ## Every day (after the first setup)
 
 1. Double-click **run.bat** in this folder.
-2. Open **http://localhost:8501** in Chrome or Edge. You should see **v0.6.0** in the header.
+2. Open **http://localhost:8501** in Chrome or Edge. You should see **v0.7.0** in the header.
 3. **Documents:** search or filter, then click a file to expand. Upload stays collapsed until you open it.
 4. **Auth:** paste a model key if you have not already, then **Save key**.
-5. **Ask:** pick ChatGPT / Claude / Cursor / Azure OpenAI, then type a question.
+5. **Ask:** pick Gemini / ChatGPT / Claude / Cursor / Azure OpenAI, then type a question.
 
 Leave the `run.bat` window open while you work. Close it (or press Ctrl+C) to stop the app.
 
@@ -47,7 +47,7 @@ If Windows asks “Do you want to run this file?”, choose **Run**.
 The empty app still opens without a key. Searching your documents does **not** use a cloud key.
 
 1. Start the app and look at **Auth** on the right (same idea as the Auth token in Test Management Hub).
-2. On the **Ask** tab, choose ChatGPT, Claude, Cursor, or Azure OpenAI.
+2. On the **Ask** tab, choose Gemini (free), ChatGPT, Claude, Cursor, or Azure OpenAI.
 3. Paste that model’s key in Auth (password box) and click **Save key**.
 4. It is written to `.env` and used immediately — no restart.
 
@@ -62,6 +62,22 @@ This app uses the **Tavily Search API**
 Only your **typed question** is sent to Tavily. Uploaded Excel/PDF/Word files are never uploaded or searched on the internet.
 
 Never send `.env` to anyone. Never paste keys into the app’s **chat** box — only into Auth.
+
+### Where to get each API key
+
+| What you picked | Where to get the key |
+|---|---|
+| Gemini (free) | https://aistudio.google.com/apikey — create a key, then paste it in Auth or in `.env` as `GEMINI_API_KEY`. |
+| ChatGPT | https://platform.openai.com/api-keys — create a secret key (you need billed OpenAI API access, not only ChatGPT Plus). |
+| Claude | https://console.anthropic.com/settings/keys — create an API key. |
+| Cursor | https://cursor.com/dashboard/integrations — create a Cursor API key. |
+| Azure OpenAI | https://portal.azure.com/ — open your Azure OpenAI resource: **Keys and Endpoint**, plus the **deployment name**. |
+| Tavily (web fallback) | https://app.tavily.com/ — copy an API key. |
+| Groq | https://console.groq.com/keys — then Auth → **Add another model** → Groq. |
+| DeepSeek | https://platform.deepseek.com/api_keys — then Auth → **Add another model** → DeepSeek. |
+| Other OpenAI-style API | Get a key from that provider, then Auth → **Add another model** → Other, and paste the API address. |
+
+Saved extra models stay on this PC and appear on the Ask tab next time. To remove one: pick it on Ask, then in Auth click **Delete this saved model**. Gemini, ChatGPT, Claude, Cursor, and Azure stay in the list (you cannot delete those).
 
 ---
 
@@ -105,4 +121,5 @@ The app’s working files (Python packages) are stored on your PC, not in OneDri
 | `The app is not set up yet` | Run **setup.bat** first, wait until it finishes, then run **run.bat**. |
 | Windows blocked the `.bat` file | Right-click it → Properties → tick **Unblock** → Apply, then run it again. |
 | Cursor Live Preview / a random port | Ignore it. Always use **http://localhost:8501** after `run.bat`. |
-| App looks like an old version / missing a new button | An old copy was still running. Close extra terminals, double-click **run.bat** (it replaces the old copy), then refresh **http://localhost:8501**. Look for **v0.6.0** in the header. |
+| App looks like an old version / missing a new button | An old copy was still running. Close extra terminals, double-click **run.bat** (it replaces the old copy), then refresh **http://localhost:8501**. Look for **v0.7.0** in the header. |
+| Terminal frozen / “stopping” never finishes | Close that window. If it will not close, open Task Manager, end **python.exe**, then double-click **run.bat** again. |

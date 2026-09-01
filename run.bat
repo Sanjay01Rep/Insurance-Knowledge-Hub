@@ -20,8 +20,8 @@ if not exist "%VENV%\Scripts\python.exe" (
 
 echo.
 echo Closing any old copy still using port 8501...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 8501 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-ping 127.0.0.1 -n 2 >nul
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8501"') do taskkill /F /T /PID %%P >nul 2>&1
+ping 127.0.0.1 -n 3 >nul
 
 if exist "%~dp0__pycache__" rd /s /q "%~dp0__pycache__" 2>nul
 
@@ -36,4 +36,4 @@ echo Close this window (or press Ctrl+C) to stop the app.
 echo Do not use Cursor Live Preview — it will not work.
 echo.
 
-"%VENV%\Scripts\python.exe" -m streamlit run app.py --server.headless true --server.port 8501 --server.fileWatcherType poll --server.runOnSave true --browser.gatherUsageStats false
+"%VENV%\Scripts\python.exe" -m streamlit run app.py --server.headless true --server.port 8501 --server.fileWatcherType none --server.runOnSave false --browser.gatherUsageStats false

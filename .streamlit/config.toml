@@ -3,10 +3,11 @@ headless = true
 port = 8501
 address = "localhost"
 maxUploadSize = 25
-# OneDrive does not reliably fire Windows file-change events, so "auto/watchdog"
-# often keeps serving the previous copy of the code. Poll the disk instead.
-fileWatcherType = "poll"
-runOnSave = true
+# Do not watch files. Poll + runOnSave walks Hugging Face/transformers on
+# every save and on Ctrl+C, which freezes the window ("stopping").
+# After a code change, close the window and double-click run.bat again.
+fileWatcherType = "none"
+runOnSave = false
 folderWatchBlacklist = [".venv", "__pycache__", ".git"]
 
 [browser]

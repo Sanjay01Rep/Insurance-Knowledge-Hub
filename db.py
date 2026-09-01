@@ -90,7 +90,23 @@ def _connect() -> sqlite3.Connection:
 
 
 def extension_of(filename: str) -> str:
-    return Path(filename or "").suffix.lower()
+    return Path(clean_upload_name(filename)).suffix.lower()
+
+
+def clean_upload_name(filename: str) -> str:
+    """Turn file.docx.docx into file.docx so a double extension still uploads."""
+    name = Path(filename or "").name.strip() or "untitled"
+    known = (".docx", ".xlsx", ".pptx", ".pdf", ".txt")
+    changed = True
+    while changed:
+        changed = False
+        lower = name.lower()
+        for ext in known:
+            if lower.endswith(ext + ext):
+                name = name[: -len(ext)]
+                changed = True
+                break
+    return name
 
 
 def is_allowed_file(filename: str) -> bool:
@@ -123,7 +139,7 @@ def save_document(
     version: str = "",
 ) -> tuple[dict | None, str | None]:
     init_db()
-    name = Path(filename).name.strip() or "untitled"
+    name = clean_upload_name(filename)
     if not is_allowed_file(name):
         logger.info("upload rejected: unsupported type name=%s", name)
         return None, TYPE_ERROR

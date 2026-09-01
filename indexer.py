@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from db import DATA_DIR, logger
@@ -12,17 +13,25 @@ EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
 _model = None
 _collection = None
+_model_lock = threading.Lock()
 
 
 def _get_model():
     global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
+    with _model_lock:
+        if _model is None:
+            from sentence_transformers import SentenceTransformer
 
-        logger.info("loading embedding model %s", EMBED_MODEL_NAME)
-        _model = SentenceTransformer(EMBED_MODEL_NAME)
-        logger.info("embedding model ready")
-    return _model
+            logger.info("loading embedding model %s", EMBED_MODEL_NAME)
+            _model = SentenceTransformer(EMBED_MODEL_NAME)
+            logger.info("embedding model ready")
+        return _model
+
+
+def preload_embedding_model() -> None:
+    """Load the local search model in the background so the first Ask is quicker."""
+    thread = threading.Thread(target=_get_model, daemon=True, name="preload-embeddings")
+    thread.start()
 
 
 def _get_collection():

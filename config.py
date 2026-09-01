@@ -20,9 +20,10 @@ _PLACEHOLDERS = {
     "your-tavily-key-here",
 }
 
-PROVIDER_ORDER = ("openai", "anthropic", "cursor", "azure")
+PROVIDER_ORDER = ("gemini", "openai", "anthropic", "cursor", "azure")
 
 PROVIDER_LABELS = {
+    "gemini": "Gemini (Google)",
     "openai": "ChatGPT (OpenAI)",
     "anthropic": "Claude (Anthropic)",
     "cursor": "Cursor",
@@ -30,6 +31,7 @@ PROVIDER_LABELS = {
 }
 
 PROVIDER_SHORT = {
+    "gemini": "Gemini",
     "openai": "ChatGPT",
     "anthropic": "Claude",
     "cursor": "Cursor",
@@ -37,6 +39,9 @@ PROVIDER_SHORT = {
 }
 
 PROVIDER_KEY_FIELDS = {
+    "gemini": [
+        {"name": "GEMINI_API_KEY", "label": "Gemini API key", "secret": True, "placeholder": "Paste API key"},
+    ],
     "openai": [
         {"name": "OPENAI_API_KEY", "label": "ChatGPT API key", "secret": True, "placeholder": "Paste API key"},
     ],
@@ -51,6 +56,39 @@ PROVIDER_KEY_FIELDS = {
         {"name": "AZURE_OPENAI_ENDPOINT", "label": "Azure endpoint", "secret": False, "placeholder": "https://….openai.azure.com"},
         {"name": "AZURE_OPENAI_DEPLOYMENT", "label": "Deployment name", "secret": False, "placeholder": "e.g. gpt-4o-mini"},
     ],
+}
+
+KEY_HELP = {
+    "gemini": {
+        "label": "Get a Gemini API key (free)",
+        "url": "https://aistudio.google.com/apikey",
+        "steps": "Sign in with Google → Create API key → copy it.",
+    },
+    "openai": {
+        "label": "Get a ChatGPT API key",
+        "url": "https://platform.openai.com/api-keys",
+        "steps": "Sign in → Create new secret key → copy it once.",
+    },
+    "anthropic": {
+        "label": "Get a Claude API key",
+        "url": "https://console.anthropic.com/settings/keys",
+        "steps": "Sign in → Create key → copy it once.",
+    },
+    "cursor": {
+        "label": "Get a Cursor API key",
+        "url": "https://cursor.com/dashboard/integrations",
+        "steps": "Sign in → Integrations → create a key → copy it.",
+    },
+    "azure": {
+        "label": "Get Azure OpenAI settings",
+        "url": "https://portal.azure.com/",
+        "steps": "Open your Azure OpenAI resource → Keys and Endpoint, plus the deployment name.",
+    },
+    "tavily": {
+        "label": "Get a Tavily key",
+        "url": "https://app.tavily.com/",
+        "steps": "Sign in → API Keys → copy the key.",
+    },
 }
 
 TAVILY_FIELD = {
@@ -88,6 +126,8 @@ def is_set(name: str) -> bool:
 
 def available_providers() -> list[str]:
     found: list[str] = []
+    if is_set("GEMINI_API_KEY"):
+        found.append("gemini")
     if is_set("OPENAI_API_KEY"):
         found.append("openai")
     if is_set("ANTHROPIC_API_KEY"):
@@ -104,7 +144,9 @@ def web_search_configured() -> bool:
 
 
 def list_provider_choices() -> list[dict]:
-    """All four models for the Ask tab picker. Keys still come from .env."""
+    """Built-in models plus any extra models the user saved."""
+    from custom_models import list_custom_models
+
     reload_env()
     ready = set(available_providers())
     rows: list[dict] = []
@@ -116,6 +158,18 @@ def list_provider_choices() -> list[dict]:
                 "full_label": PROVIDER_LABELS[provider],
                 "ready": provider in ready,
                 "model": _model_for(provider) if provider in ready else "",
+                "custom": False,
+            }
+        )
+    for item in list_custom_models():
+        rows.append(
+            {
+                "id": item["id"],
+                "label": item["name"],
+                "full_label": item["name"],
+                "ready": item["ready"],
+                "model": item["model"],
+                "custom": True,
             }
         )
     return rows
@@ -129,38 +183,78 @@ def default_provider() -> str:
         return requested
     if ready:
         return ready[0]
-    return "openai"
+    return "gemini"
 
 
 def resolve_answer_setup(preferred: str | None = None) -> dict:
     """Return which cloud model will write answers. Local document search does not need this."""
+    from custom_models import get_custom_model, is_custom_id
+
     reload_env()
     found = available_providers()
-    requested = (preferred or env("ANSWER_PROVIDER") or "").strip().lower()
+    requested = (preferred or env("ANSWER_PROVIDER") or "").strip()
+    requested_lower = requested.lower()
 
-    if requested:
-        if requested not in PROVIDER_LABELS:
+    if is_custom_id(requested):
+        custom = get_custom_model(requested)
+        if not custom:
+            return {
+                "ok": False,
+                "provider": requested,
+                "label": "Saved model",
+                "model": "",
+                "custom": True,
+                "error": "That saved model was deleted. Pick another model, or add it again in Auth.",
+                "web_ok": web_search_configured(),
+            }
+        if not custom.get("ready"):
+            return {
+                "ok": False,
+                "provider": requested,
+                "label": custom["name"],
+                "model": custom.get("model") or "",
+                "custom": True,
+                "error": f"{custom['name']} is selected, but its key is empty. Paste it in Auth on the right.",
+                "web_ok": web_search_configured(),
+            }
+        return {
+            "ok": True,
+            "provider": "custom",
+            "custom_id": custom["id"],
+            "label": custom["name"],
+            "model": custom["model"],
+            "base_url": custom["base_url"],
+            "api_key": custom["api_key"],
+            "custom": True,
+            "error": None,
+            "web_ok": web_search_configured(),
+        }
+
+    if requested_lower:
+        if requested_lower not in PROVIDER_LABELS:
             return {
                 "ok": False,
                 "provider": None,
                 "label": "",
                 "model": "",
+                "custom": False,
                 "error": (
-                    "Choose ChatGPT, Claude, Cursor, or Azure OpenAI. "
+                    "Choose Gemini, ChatGPT, Claude, Cursor, Azure OpenAI, or one of your saved models. "
                     f"“{requested}” is not a known model."
                 ),
                 "web_ok": web_search_configured(),
             }
-        if requested not in found:
+        if requested_lower not in found:
             return {
                 "ok": False,
-                "provider": requested,
-                "label": PROVIDER_LABELS[requested],
+                "provider": requested_lower,
+                "label": PROVIDER_LABELS[requested_lower],
                 "model": "",
-                "error": _missing_for(requested),
+                "custom": False,
+                "error": _missing_for(requested_lower),
                 "web_ok": web_search_configured(),
             }
-        provider = requested
+        provider = requested_lower
     elif found:
         provider = found[0]
     else:
@@ -169,6 +263,7 @@ def resolve_answer_setup(preferred: str | None = None) -> dict:
             "provider": None,
             "label": "",
             "model": "",
+            "custom": False,
             "error": MISSING_ANY,
             "web_ok": web_search_configured(),
         }
@@ -179,12 +274,15 @@ def resolve_answer_setup(preferred: str | None = None) -> dict:
         "provider": provider,
         "label": PROVIDER_LABELS[provider],
         "model": model,
+        "custom": False,
         "error": None,
         "web_ok": web_search_configured(),
     }
 
 
 def _model_for(provider: str) -> str:
+    if provider == "gemini":
+        return env("GEMINI_MODEL") or "gemini-3.7-flash"
     if provider == "openai":
         return env("OPENAI_MODEL") or "gpt-4o-mini"
     if provider == "anthropic":
