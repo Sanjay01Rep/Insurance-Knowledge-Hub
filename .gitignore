@@ -1,0 +1,16 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+uploads/
+*.db
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+.chroma/
+chroma_db/
+*.log
+.playwright-mcp/
+.cursor/

@@ -1,0 +1,21 @@
+[server]
+headless = true
+port = 8501
+address = "localhost"
+maxUploadSize = 25
+# OneDrive does not reliably fire Windows file-change events, so "auto/watchdog"
+# often keeps serving the previous copy of the code. Poll the disk instead.
+fileWatcherType = "poll"
+runOnSave = true
+folderWatchBlacklist = [".venv", "__pycache__", ".git"]
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#005696"
+backgroundColor = "#f4f6f8"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a2332"
+font = "sans serif"
+base = "light"

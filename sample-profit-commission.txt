@@ -1,0 +1,3 @@
+Profit commission is a share of a reinsurer's profit paid back to the ceding insurer.
+
+In D365 this is usually captured as a posting rule on the reinsurance contract.
